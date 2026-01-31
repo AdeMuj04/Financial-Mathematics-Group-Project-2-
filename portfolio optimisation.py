@@ -31,6 +31,7 @@ for ticker in tickers:
 log_returns = np.log(adj_close_df / adj_close_df.shift(1)).dropna()
     
 cov_matrix = log_returns.cov() * 252
+print(cov_matrix)
 
 def standard_deviation(weights, cov_matrix):
     variance = weights.T @ cov_matrix @ weights
@@ -47,6 +48,7 @@ risk_free_rate = .02
 def neg_sharpe_ratio(weights, log_returns, cov_matrix, risk_free_rate):
     return -sharpe_ratio(weights, log_returns, cov_matrix, risk_free_rate)
 
+# Constraints: sum of weights = 1, individual weights between 0 and 0.4, cannot be shorted
 constraints = {'type': 'eq', 'fun': lambda weights: np.sum(weights) - 1}
 bounds = [(0, 0.4) for _ in range(len(tickers))]
 initial_weights = np.array([1/len(tickers)]*len(tickers))
