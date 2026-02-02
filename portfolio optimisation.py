@@ -1,9 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Jan 30 23:14:50 2026
-
-@author: slopingcorn
-"""
 from datetime import datetime, timedelta
 import numpy as np
 import yfinance as yf
@@ -86,5 +80,6 @@ plt.xticks(rotation=45)
 plt.xlabel('Assets')
 plt.ylabel('Optimal Weights')
 plt.title('Optimal Portfolio Weights')
+
 
 plt.show()
