@@ -6,7 +6,7 @@ Implement portfolio rebalancing strategies including time-based triggers and thr
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from .optimization import optimize_weights
+from scipy import optimize
 from .data_loader import get_current_weights, calculate_returns
 
 class RebalanceEngine:
