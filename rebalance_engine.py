@@ -6,8 +6,8 @@ Implement portfolio rebalancing strategies including time-based triggers and thr
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from scipy import optimize
-from .data_loader import get_current_weights, calculate_returns
+import matplotlib.pyplot as plt
+from scipy.optimize import minimize
 
 class RebalanceEngine:
     def __init__(self, tickers, target_weights, rebalance_interval='quarterly', threshold=0.1):
@@ -28,6 +28,109 @@ class RebalanceEngine:
         self.portfolio_values = []
         self.weights_history = []
         
+    def calculate_returns(prices, method='log'):
+        """
+        Calculate asset log returns or arithmetic returns
+        
+        Parameters:
+            prices: Closing price DataFrame
+            method: 'log' or 'arithmetic'
+        
+        Returns:
+            DataFrame: Return matrix
+        """
+        if prices.empty:
+            return pd.DataFrame()
+        
+        if method == 'log':
+            returns = np.log(prices / prices.shift(1)).dropna()
+        else:
+            returns = (prices / prices.shift(1) - 1).dropna()
+        
+        return returns
+
+    def get_current_weights(prices):
+        """
+        Calculate current asset market value weights
+        
+        Parameters:
+            prices: Latest closing price DataFrame
+        
+        Returns:
+            ndarray: Current weight vector
+        """
+        if prices.empty:
+            return np.array([])
+        
+        total_value = prices.sum(axis=1).iloc[-1]
+        return (prices.iloc[-1] / total_value).values
+
+    def optimize_weights(returns, risk_free=0, method='sharpe'):
+        """
+        Solve for optimal asset weights
+        
+        Parameters:
+            returns: Return DataFrame
+            risk_free: Risk-free rate
+            method: Optimization objective ('sharpe' or 'mean-variance')
+        
+        Returns:
+            ndarray: Optimal weight vector
+        """
+        if returns.empty:
+            return np.array([])
+        
+        n_assets = len(returns.columns)
+        
+        # Constraint conditions
+        bounds = tuple((0, 1) for _ in range(n_assets))  # Non-negative weights
+        constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})  # Sum of weights equals 1
+        
+        # Initial weights (equal weight)
+        initial_weights = np.array([1/n_assets] * n_assets)
+        
+        try:
+            if method == 'sharpe':
+                # Maximize Sharpe ratio
+                result = minimize(
+                    sharpe_ratio, 
+                    initial_weights, 
+                    args=(returns, risk_free),
+                    method='SLSQP',
+                    bounds=bounds,
+                    constraints=constraints
+                )
+            elif method == 'min_variance':
+                # Minimum variance portfolio
+                result = minimize(
+                    lambda w, r: portfolio_volatility(w, r),
+                    initial_weights,
+                    args=(returns),
+                    method='SLSQP',
+                    bounds=bounds,
+                    constraints=constraints
+                )
+            else:
+                # Default Sharpe ratio
+                result = minimize(
+                    sharpe_ratio, 
+                    initial_weights, 
+                    args=(returns, risk_free),
+                    method='SLSQP',
+                    bounds=bounds,
+                    constraints=constraints
+                )
+            
+            if result.success:
+                return result.x
+            else:
+                print(f"Optimization failed: {result.message}")
+                return initial_weights
+                
+        except Exception as e:
+            print(f"Error in optimization process: {e}")
+            return initial_weights
+    
     def backtest(self, prices):
         """
         Historical data backtesting
