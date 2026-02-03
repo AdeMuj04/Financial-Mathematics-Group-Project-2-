@@ -511,7 +511,7 @@ class PortfolioSimulator:
         # Drawdown analysis
         cumulative = (1 + daily_returns).cumprod()
         running_max = cumulative.expanding().max()
-        drawdown = (cumulative - running_max) / running_max
+        drawdown = ( running_max - cumulative) / running_max
         max_drawdown = drawdown.min()
         
         # Find longest drawdown period
@@ -553,7 +553,7 @@ class PortfolioSimulator:
         print(f"Annualized Return: {summary['Annualized Return']*100:.2f}%")
         print(f"Annualized Volatility: {summary['Annualized Volatility']*100:.2f}%")
         print(f"Sharpe Ratio: {summary['Sharpe Ratio']:.4f}")
-        print(f"Maximum Drawdown: {summary['Maximum Drawdown']*100:.2f}%")
+        print(f"Maximum Drawdown: {abs(summary['Maximum Drawdown']*100):.2f}%")
         print(f"Max Drawdown Duration: {summary['Max Drawdown Duration (days)']} days")
         print(f"Number of Rebalances: {summary['Number of Rebalances']}")
         print("="*80)
@@ -723,7 +723,7 @@ if __name__ == "__main__":
     # Create the simulator
     simulator = PortfolioSimulator(
         tickers=tickers,
-        initial_investment=10000,     # Start with $10,000
+        initial_investment=1000000,     # Start with $10,000
         risk_free_rate=0.02,          # 2% risk-free rate
         max_weight=0.4,               # Max 40% in any stock
         threshold=1e-2                # Min 1% to hold
@@ -733,7 +733,7 @@ if __name__ == "__main__":
     results = simulator.simulate(
         start_date='2020-01-01',
         end_date='2024-12-31',
-        rebalance_frequency='annual',  # Rebalance once per year
+        rebalance_frequency='semi-annual',  # Rebalance once per year
         lookback_years=5,              # Use 5 years of data for optimization
         transaction_cost=0.0           # No transaction costs
     )
