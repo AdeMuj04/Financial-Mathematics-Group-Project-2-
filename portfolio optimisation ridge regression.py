@@ -15,7 +15,7 @@ tickers = [
     'LLY', 'AVGO', 'JPM', 'UNH', 'XOM', 'V', 'MA', 'HD', 'PG', 'COST', 'MRK',
     'ABBV', 'CVX', 'PEP', 'ADBE', 'KO', 'CRM', 'NFLX', 'AMD', 'TMO', 'WMT',
     'DIS', 'MCD', 'INTC', 'ACN', 'QCOM', 'CSCO', 'TXN', 'NEE', 'LIN', 'PM',
-    'HON', 'AMGN', 'IBM', 'UPS', 'MS', 'GS', 'SBUX', 'CAT', 'BA', "CVNA"
+    'HON', 'AMGN', 'IBM', 'UPS', 'MS', 'GS', 'SBUX', 'CAT', 'BA'
 ]
 
 
@@ -29,7 +29,6 @@ for ticker in tickers:
     data = yf.download(ticker, start=start_date, end=end_date, progress=False)
     adj_close[ticker] = data['Close']
 
-#%%
 
 log_returns = np.log(adj_close / adj_close.shift(1)).dropna()
 mu = log_returns.mean().values * 252
@@ -191,6 +190,27 @@ weights, obj_vals_ridge = ridge_portfolio_pgd(cov_matrix, mu, lam, step_size, ca
 #create a pandas series of tickers and corresponding weights 
 weights_series = pd.Series(weights, index=tickers)
 
+
+
+
+
+#(uncomment below to use the heuristic)
+
+#apply heuristic of eliminating companies below threshold weight:
+# weights_series = weights_series[weights_series.abs() > threshold]
+# weights_series /= weights_series.sum()
+
+
+
+
+
+
+
+
+
+
+
+
 #print the companies ticker and corresponding weights to 4dp
 print("\nRidge Portfolio Weights:\n")
 for t, w in weights_series.items():
@@ -215,3 +235,4 @@ plt.ylabel("Weight")
 plt.title("Ridge Regression Portfolio Weights")
 plt.tight_layout()
 plt.show()
+
