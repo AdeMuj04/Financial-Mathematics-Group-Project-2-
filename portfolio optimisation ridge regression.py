@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
-
-
-
 from dateutil.relativedelta import relativedelta
 from datetime import datetime
 import numpy as np
 import yfinance as yf
 import pandas as pd
 import matplotlib.pyplot as plt
+
+
+rfr = 0.02
+rf_daily_log = rfr / 252.0
+
+
 
 
 tickers = [
@@ -18,10 +21,14 @@ tickers = [
     'HON', 'AMGN', 'IBM', 'UPS', 'MS', 'GS', 'SBUX', 'CAT', 'BA'
 ]
 
+tickers = tickers + ["CASH"]
 
 years = 5
-end_date = datetime.today() - relativedelta(years = 0)   # your original choice
+end_date = datetime.today() - relativedelta(years = 0) 
 start_date = end_date - relativedelta(years=years)
+
+
+
 
 
 adj_close = pd.DataFrame()
@@ -29,6 +36,11 @@ for ticker in tickers:
     data = yf.download(ticker, start=start_date, end=end_date, progress=False)
     adj_close[ticker] = data['Close']
 
+cash_prices = pd.Series(np.exp(rf_daily_log * np.arange(len(adj_close))), index=adj_close.index, name="CASH")
+cash_prices /= cash_prices.iloc[0]
+
+adj_close["CASH"] = cash_prices
+#%%
 
 log_returns = np.log(adj_close / adj_close.shift(1)).dropna()
 mu = log_returns.mean().values * 252
@@ -69,7 +81,6 @@ def projection(v, total=1.0, cap=0.4, tol=1e-12, max_iter=2000):
     -------
     W : array
         Projected weights to be used in gradient descent
-
     """
     
     #create vector n with length equal to the number of rows (same as the number of assets)
@@ -163,7 +174,7 @@ def ridge_portfolio_pgd(cov_matrix, mu, lam, step_size, cap=0.4, tol=1e-8, max_i
         
         #calculate next step w_new =  (w - t*grad(f(x)), then project on desired conditions
         w_new = projection(w - step_size * grad, total = 1.0, cap = cap)
-        
+
         #check if tolerance has been reached - if not repeat another iteration
         if np.linalg.norm(w_new - w) < tol:
             w = w_new
@@ -182,8 +193,10 @@ def ridge_portfolio_pgd(cov_matrix, mu, lam, step_size, cap=0.4, tol=1e-8, max_i
 risk_free_rate = 0.04
 cap = 1
 threshold = 0.03
-lam = 2
+lam = 5
 step_size = 0.01
+
+
 
 weights, obj_vals_ridge = ridge_portfolio_pgd(cov_matrix, mu, lam, step_size, cap=cap)
 
@@ -194,13 +207,20 @@ weights_series = pd.Series(weights, index=tickers)
 
 
 
-#(uncomment below to use the heuristic)
+
+
+
+
 
 #apply heuristic of eliminating companies below threshold weight:
 # weights_series = weights_series[weights_series.abs() > threshold]
 # weights_series /= weights_series.sum()
 
 
+#recalcaulate the metrics after the reweighting
+w_full = pd.Series(0.0, index=log_returns.columns)
+w_full.loc[weights_series.index] = weights_series.values
+w_full_np = w_full.values
 
 
 
@@ -217,9 +237,9 @@ for t, w in weights_series.items():
     print(f"{t}: {w:.4f}")
 
 #calculate and print the key data as defined earlier
-ridge_return = expected_return(weights, log_returns)
-ridge_vol = standard_deviation(weights, cov_matrix)
-ridge_sharpe = sharpe_ratio(weights, log_returns, cov_matrix, risk_free_rate)
+ridge_return = expected_return(w_full_np, log_returns)
+ridge_vol = standard_deviation(w_full_np, cov_matrix)
+ridge_sharpe = sharpe_ratio(w_full_np, log_returns, cov_matrix, risk_free_rate)
 
 print("\nRIDGE Portfolio Performance:")
 print(f"Expected Return: {ridge_return:.4f}")
@@ -227,12 +247,13 @@ print(f"Volatility:      {ridge_vol:.4f}")
 print(f"Sharpe Ratio:    {ridge_sharpe:.4f}")
 
 
-#plot the weights on a bar chart
+
+plot_series = weights_series.reindex(weights_series.abs().sort_values(ascending=False).index)
+
 plt.figure(figsize=(10, 6))
-plt.bar(weights_series.index, weights_series.values)
+plt.bar(plot_series.index, plot_series.values)
 plt.xticks(rotation=45)
 plt.ylabel("Weight")
-plt.title("Ridge Regression Portfolio Weights")
+plt.title("Ridge Regression Portfolio Weights (sorted by |weight|)")
 plt.tight_layout()
 plt.show()
-
