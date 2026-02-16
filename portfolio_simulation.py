@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Portfolio Optimization with Simulation and Rebalancing
+Portfolio Optimization with Simulation, Rebalancing, and Efficient Frontier
 Display-only version - Shows plots without saving files
 """
 from datetime import datetime, timedelta
@@ -511,8 +511,8 @@ class PortfolioSimulator:
         # Drawdown analysis
         cumulative = (1 + daily_returns).cumprod()
         running_max = cumulative.expanding().max()
-        drawdown = ( running_max - cumulative) / running_max
-        max_drawdown = drawdown.min()
+        drawdown = (running_max - cumulative) / running_max
+        max_drawdown = drawdown.max()
         
         # Find longest drawdown period
         drawdown_start = None
@@ -520,7 +520,7 @@ class PortfolioSimulator:
         current_drawdown_days = 0
         
         for i, dd in enumerate(drawdown):
-            if dd < 0:
+            if dd > 0:
                 if drawdown_start is None:
                     drawdown_start = i
                 current_drawdown_days = i - drawdown_start
@@ -553,7 +553,7 @@ class PortfolioSimulator:
         print(f"Annualized Return: {summary['Annualized Return']*100:.2f}%")
         print(f"Annualized Volatility: {summary['Annualized Volatility']*100:.2f}%")
         print(f"Sharpe Ratio: {summary['Sharpe Ratio']:.4f}")
-        print(f"Maximum Drawdown: {abs(summary['Maximum Drawdown']*100):.2f}%")
+        print(f"Maximum Drawdown: {summary['Maximum Drawdown']*100:.2f}%")
         print(f"Max Drawdown Duration: {summary['Max Drawdown Duration (days)']} days")
         print(f"Number of Rebalances: {summary['Number of Rebalances']}")
         print("="*80)
@@ -703,6 +703,240 @@ class PortfolioSimulator:
         plt.show()  # Display instead of saving
         
         return fig
+    
+    def plot_efficient_frontier(self, start_date, end_date, lookback_years=5, num_portfolios=5000):
+        """
+        Plots the efficient frontier showing the risk-return tradeoff
+        
+        What it shows:
+        - Efficient Frontier Curve: The best possible portfolios for each risk level
+        - Random Portfolios: Scattered dots showing random portfolio combinations
+        - Optimal Portfolio: Red star showing the max Sharpe ratio portfolio
+        - Individual Assets: Blue dots showing each stock's risk/return
+        
+        The efficient frontier represents portfolios that give the maximum return
+        for a given level of risk, or minimum risk for a given return.
+        """
+        print("\n" + "="*80)
+        print("GENERATING EFFICIENT FRONTIER")
+        print("="*80)
+        
+        # Convert string dates to datetime if needed
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d')
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d')
+        
+        # Get historical data for optimization
+        opt_start = start_date - timedelta(days=lookback_years*365)
+        print(f"Fetching data from {opt_start.date()} to {end_date.date()}...")
+        
+        opt_prices = fetch_price_data(self.tickers, opt_start, end_date)
+        opt_returns = calculate_log_returns(opt_prices)
+        opt_cov_matrix = opt_returns.cov() * 252  # Annualized
+        mean_returns = opt_returns.mean() * 252   # Annualized
+        
+        print(f"Generating {num_portfolios} random portfolios...")
+        
+        # Generate random portfolios for visualization
+        portfolio_returns = []
+        portfolio_volatilities = []
+        portfolio_sharpe_ratios = []
+        
+        np.random.seed(42)  # For reproducibility
+        
+        for _ in range(num_portfolios):
+            # Generate random weights using Dirichlet distribution for better spread
+            weights = np.random.dirichlet(np.ones(len(self.tickers)))
+            
+            # Apply max weight constraint - regenerate if violated
+            attempts = 0
+            while np.max(weights) > self.max_weight and attempts < 10:
+                weights = np.random.dirichlet(np.ones(len(self.tickers)))
+                attempts += 1
+            
+            if np.max(weights) <= self.max_weight + 0.05:  # Allow small tolerance
+                portfolio_return = np.sum(weights * mean_returns)
+                portfolio_vol = np.sqrt(weights.T @ opt_cov_matrix @ weights)
+                sharpe = (portfolio_return - self.risk_free_rate) / portfolio_vol
+                
+                portfolio_returns.append(portfolio_return)
+                portfolio_volatilities.append(portfolio_vol)
+                portfolio_sharpe_ratios.append(sharpe)
+        
+        portfolio_returns = np.array(portfolio_returns)
+        portfolio_volatilities = np.array(portfolio_volatilities)
+        portfolio_sharpe_ratios = np.array(portfolio_sharpe_ratios)
+        
+        print("Finding optimal portfolio...")
+        
+        # Find the optimal portfolio (max Sharpe ratio)
+        optimal = optimize_portfolio(
+            self.tickers, opt_returns, opt_cov_matrix,
+            self.risk_free_rate, self.max_weight, self.threshold
+        )
+        
+        # Calculate individual asset risk/return
+        individual_returns = mean_returns.values
+        individual_volatilities = np.sqrt(np.diag(opt_cov_matrix))
+        
+        # Find minimum variance portfolio (needed for plotting later)
+        def portfolio_variance(weights):
+            return weights.T @ opt_cov_matrix @ weights
+        
+        constraints_min_var = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}
+        bounds = [(0, self.max_weight) for _ in range(len(self.tickers))]
+        initial_weights = np.array([1/len(self.tickers)] * len(self.tickers))
+        
+        min_var_result = minimize(
+            portfolio_variance,
+            initial_weights,
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints_min_var
+        )
+        
+        min_var_return = np.sum(min_var_result.x * mean_returns)
+        min_var_vol = np.sqrt(min_var_result.x.T @ opt_cov_matrix @ min_var_result.x)
+        
+        # Create the plot
+        fig, ax = plt.subplots(figsize=(14, 10))
+        
+        # Plot random portfolios colored by Sharpe ratio
+        scatter = ax.scatter(portfolio_volatilities * 100, portfolio_returns * 100,
+                           c=portfolio_sharpe_ratios, cmap='viridis',
+                           alpha=0.5, s=10, label='Random Portfolios')
+        
+        # Plot individual assets
+        ax.scatter(individual_volatilities * 100, individual_returns * 100,
+                  c='blue', marker='o', s=100, alpha=0.6, 
+                  edgecolors='black', linewidth=1, label='Individual Assets',
+                  zorder=5)
+        
+        # Add asset labels (only for top 10 to avoid clutter)
+        asset_sharpes = (individual_returns - self.risk_free_rate) / individual_volatilities
+        top_assets_idx = np.argsort(asset_sharpes)[-10:]
+        
+        for i in top_assets_idx:
+            ticker = self.tickers[i]
+            ax.annotate(ticker, 
+                       (individual_volatilities[i] * 100, individual_returns[i] * 100),
+                       xytext=(5, 5), textcoords='offset points',
+                       fontsize=8, alpha=0.8, fontweight='bold')
+        
+        # Plot optimal portfolio
+        ax.scatter(optimal['volatility'] * 100, optimal['expected_return'] * 100,
+                  marker='*', color='red', s=500, 
+                  edgecolors='black', linewidth=2,
+                  label=f'Maximum Sharpe Portfolio (Sharpe: {optimal["sharpe_ratio"]:.3f})',
+                  zorder=10)
+        
+        # Plot minimum variance portfolio
+        ax.scatter(min_var_vol * 100, min_var_return * 100,
+                  marker='D', color='orange', s=200,
+                  edgecolors='black', linewidth=2,
+                  label='Minimum Variance Portfolio',
+                  zorder=10)
+        
+        # Find and plot the efficient frontier curve
+        # Strategy: Generate frontier in two parts
+        # Part 1: From minimum variance to maximum Sharpe
+        # Part 2: From maximum Sharpe to maximum return
+        
+        print("Computing efficient frontier curve...")
+        
+        # Find maximum return portfolio (put max weight in highest return asset)
+        max_return_idx = np.argmax(mean_returns)
+        max_return = mean_returns.iloc[max_return_idx]
+        max_return_vol = np.sqrt(opt_cov_matrix.iloc[max_return_idx, max_return_idx])
+        
+        # Generate efficient frontier curve
+        # Create more target returns for a smoother curve
+        target_returns = np.linspace(min_var_return, max_return * 0.95, 150)
+        efficient_volatilities = []
+        efficient_returns = []
+        
+        # Re-define for the optimization loop
+        bounds = [(0, self.max_weight) for _ in range(len(self.tickers))]
+        initial_weights = np.array([1/len(self.tickers)] * len(self.tickers))
+        
+        for target_return in target_returns:
+            # Minimize volatility for this target return
+            constraints = [
+                {'type': 'eq', 'fun': lambda w: np.sum(w) - 1},
+                {'type': 'eq', 'fun': lambda w, tr=target_return: np.sum(w * mean_returns) - tr}
+            ]
+            
+            result = minimize(
+                lambda w: np.sqrt(w.T @ opt_cov_matrix @ w),
+                initial_weights,
+                method='SLSQP',
+                bounds=bounds,
+                constraints=constraints,
+                options={'maxiter': 500, 'ftol': 1e-9}
+            )
+            
+            if result.success:
+                vol = np.sqrt(result.x.T @ opt_cov_matrix @ result.x)
+                ret = np.sum(result.x * mean_returns)
+                # Only add if it's actually efficient (not dominated)
+                if len(efficient_volatilities) == 0 or vol >= efficient_volatilities[-1]:
+                    efficient_volatilities.append(vol)
+                    efficient_returns.append(ret)
+        
+        efficient_volatilities = np.array(efficient_volatilities)
+        efficient_returns = np.array(efficient_returns)
+        
+        # Plot the efficient frontier with smooth curve
+        ax.plot(efficient_volatilities * 100, 
+               efficient_returns * 100,
+               'r-', linewidth=3.5, label='Efficient Frontier', zorder=8, alpha=0.9)
+        
+        # Add Capital Market Line (line from risk-free rate through optimal portfolio)
+        # This shows the best portfolios when you can borrow/lend at risk-free rate
+        cml_x = np.array([0, optimal['volatility'] * 100 * 1.5])
+        cml_y = self.risk_free_rate * 100 + (cml_x / (optimal['volatility'] * 100)) * (optimal['expected_return'] - self.risk_free_rate) * 100
+        ax.plot(cml_x, cml_y, 'g--', linewidth=2, label='Capital Market Line', zorder=7, alpha=0.7)
+        
+        # Add colorbar for Sharpe ratio
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label('Sharpe Ratio', fontsize=11)
+        
+        # Formatting
+        ax.set_xlabel('Volatility (Annual Standard Deviation %)', fontsize=13, fontweight='bold')
+        ax.set_ylabel('Expected Return (Annual %)', fontsize=13, fontweight='bold')
+        ax.set_title('Efficient Frontier & Portfolio Optimization', fontsize=16, fontweight='bold', pad=20)
+        ax.legend(loc='best', fontsize=10, framealpha=0.9)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # Set axis limits for better view
+        x_margin = (max(portfolio_volatilities) - min(portfolio_volatilities)) * 0.1
+        y_margin = (max(portfolio_returns) - min(portfolio_returns)) * 0.1
+        ax.set_xlim(min(portfolio_volatilities) * 100 - x_margin * 100, 
+                    max(portfolio_volatilities) * 100 + x_margin * 100)
+        ax.set_ylim(min(portfolio_returns) * 100 - y_margin * 100,
+                    max(portfolio_returns) * 100 + y_margin * 100)
+        
+        # Add information box
+        info_text = f"Risk-Free Rate: {self.risk_free_rate*100:.1f}%\n"
+        info_text += f"Max Weight per Asset: {self.max_weight*100:.0f}%\n"
+        info_text += f"Number of Assets: {len(self.tickers)}\n"
+        info_text += f"Random Portfolios: {len(portfolio_returns):,}"
+        
+        ax.text(0.98, 0.02, info_text,
+               transform=ax.transAxes,
+               fontsize=9,
+               verticalalignment='bottom',
+               horizontalalignment='right',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.tight_layout()
+        plt.show()
+        
+        print("✅ Efficient frontier plot complete!")
+        print("="*80)
+        
+        return fig
 
 
 # ============================================================================
@@ -723,7 +957,7 @@ if __name__ == "__main__":
     # Create the simulator
     simulator = PortfolioSimulator(
         tickers=tickers,
-        initial_investment=1000000,     # Start with $10,000
+        initial_investment=1000000,     # Start with $1,000,000
         risk_free_rate=0.02,          # 2% risk-free rate
         max_weight=0.4,               # Max 40% in any stock
         threshold=1e-2                # Min 1% to hold
@@ -733,7 +967,7 @@ if __name__ == "__main__":
     results = simulator.simulate(
         start_date='2020-01-01',
         end_date='2024-12-31',
-        rebalance_frequency='semi-annual',  # Rebalance once per year
+        rebalance_frequency='semi-annual',  # Rebalance twice per year
         lookback_years=5,              # Use 5 years of data for optimization
         transaction_cost=0.0           # No transaction costs
     )
@@ -748,4 +982,13 @@ if __name__ == "__main__":
     print("\nGenerating allocation evolution chart...")
     simulator.plot_allocation_evolution()
     
-    print("\n✅ Simulation complete! Charts displayed.")
+    # NEW: Generate efficient frontier plot
+    print("\nGenerating efficient frontier...")
+    simulator.plot_efficient_frontier(
+        start_date='2020-01-01',
+        end_date='2024-12-31',
+        lookback_years=5,
+        num_portfolios=5000  # Number of random portfolios to generate
+    )
+    
+    print("\n✅ All visualizations complete!")
