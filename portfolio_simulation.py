@@ -166,6 +166,168 @@ def optimize_portfolio(tickers, log_returns, cov_matrix, risk_free_rate=0.02, ma
 
 
 # ============================================================================
+# RIDGE REGRESSION OPTIMIZER (from portfolio optimisation ridge iteration 3)
+# ============================================================================
+
+def projection(v, total=1.0, cap=0.4, tol=1e-12, max_iter=2000):
+    """
+    Projects weights onto the constrained simplex: sum(w)=total, 0 <= w <= cap.
+    Uses bisection to find the shift tau such that clip(v - tau, 0, cap).sum() == total.
+    """
+    n = v.shape[0]
+    if total < 0 or total > n * cap:
+        raise ValueError(f"Infeasible: total={total} not in [0, {n*cap}] for cap={cap}")
+
+    lo = v.min() - cap
+    hi = v.max()
+
+    for _ in range(max_iter):
+        tau = 0.5 * (lo + hi)
+        w = np.clip(v - tau, 0.0, cap)
+        w_sum = w.sum()
+        if abs(w_sum - total) < tol:
+            return w
+        if w_sum > total:
+            lo = tau
+        else:
+            hi = tau
+
+    return np.clip(v - 0.5 * (lo + hi), 0.0, cap)
+
+
+def ridge_grad(w, cov_matrix, mu, lam=1, gamma=1):
+    """Gradient of the ridge mean-variance objective: gamma*Sigma*w - mu + lambda*w"""
+    return gamma * (cov_matrix @ w) - mu + lam * w
+
+
+def ridge_portfolio_pgd(cov_matrix, mu, lam, step_size, gamma=1.0, cap=0.4,
+                        tol=1e-8, max_iter=20000, w_init=None):
+    """
+    Projected Gradient Descent for the ridge mean-variance objective:
+        min  0.5*gamma*w'*Sigma*w - mu'*w + 0.5*lam*w'*w
+        s.t. sum(w)=1, 0 <= w <= cap
+
+    Parameters
+    ----------
+    cov_matrix : 2-D array-like
+        Annualised covariance matrix (n x n).
+    mu : 1-D array
+        Annualised expected returns (n,).
+    lam : float
+        Ridge (L2) regularisation penalty.
+    step_size : float
+        Fixed gradient-descent step size.
+    gamma : float
+        Risk-aversion multiplier on the variance term.
+    cap : float
+        Maximum weight for any single asset.
+    tol : float
+        Convergence tolerance on the weight update norm.
+    max_iter : int
+        Maximum number of gradient steps.
+    w_init : 1-D array or None
+        Warm-start weights; uses equal weights if None.
+
+    Returns
+    -------
+    w : 1-D array
+        Optimal portfolio weights.
+    obj_vals : list
+        Objective value recorded after each step (for diagnostics).
+    """
+    cov_np = np.asarray(cov_matrix)
+    mu_np = np.asarray(mu)
+    p = len(mu_np)
+    w = (np.ones(p) / p) if w_init is None else np.asarray(w_init).copy()
+
+    obj_vals = []
+    for _ in range(max_iter):
+        grad = ridge_grad(w, cov_np, mu_np, lam=lam, gamma=gamma)
+        w_new = projection(w - step_size * grad, total=1.0, cap=cap)
+        if np.linalg.norm(w_new - w) < tol:
+            w = w_new
+            break
+        w = w_new
+        obj_vals.append(
+            0.5 * gamma * (w @ cov_np @ w) - (mu_np @ w) + 0.5 * lam * (w @ w)
+        )
+
+    return w, obj_vals
+
+
+def optimize_portfolio_ridge(tickers, log_returns, cov_matrix, risk_free_rate=0.02,
+                              lam=1.0, gamma=8.0, cap=0.08, step_size=0.01,
+                              threshold=0.0, w_init=None):
+    """
+    Ridge-regression portfolio optimizer using Projected Gradient Descent.
+
+    Solves:  min  0.5*gamma*w'*Sigma*w - mu'*w + 0.5*lam*||w||^2
+             s.t. sum(w)=1, 0 <= w_i <= cap
+
+    Returns the same dict format as optimize_portfolio() so it is a drop-in
+    replacement inside PortfolioSimulator.
+
+    Parameters
+    ----------
+    tickers : list of str
+        Asset tickers (must match log_returns columns).
+    log_returns : DataFrame
+        Daily log returns (rows=dates, columns=tickers).
+    cov_matrix : array-like
+        Annualised covariance matrix.
+    risk_free_rate : float
+        Annual risk-free rate used to compute Sharpe ratio.
+    lam : float
+        Ridge penalty strength.
+    gamma : float
+        Risk-aversion multiplier.
+    cap : float
+        Per-asset weight cap.
+    step_size : float
+        PGD step size.
+    threshold : float
+        Weights below this are zeroed and the remainder renormalised.
+    w_init : array or None
+        Warm-start weights.
+    """
+    mu = log_returns.mean().values * 252
+    cov_np = np.asarray(cov_matrix)
+
+    weights_arr, _ = ridge_portfolio_pgd(
+        cov_np, mu, lam=lam, step_size=step_size,
+        gamma=gamma, cap=cap, tol=1e-8, max_iter=20000, w_init=w_init
+    )
+
+    weights_series = pd.Series(weights_arr, index=log_returns.columns)
+
+    # Apply threshold and renormalise
+    weights_series = weights_series[weights_series.abs() > threshold]
+    weights_series /= weights_series.sum()
+
+    # Build a full vector aligned to log_returns columns (zeros for dropped assets)
+    w_full = pd.Series(0.0, index=log_returns.columns)
+    w_full.loc[weights_series.index] = weights_series.values
+    w_full_np = w_full.values
+
+    portfolio_return = expected_return(w_full_np, log_returns)
+    portfolio_volatility = standard_deviation(w_full_np, cov_np)
+    portfolio_sharpe = (
+        (portfolio_return - risk_free_rate) / portfolio_volatility
+        if portfolio_volatility > 1e-12 else 0.0
+    )
+
+    # Only return weights for tickers present in the original list
+    result_weights = {t: float(w_full[t]) for t in tickers if t in w_full.index and w_full[t] > 1e-9}
+
+    return {
+        'weights': result_weights,
+        'expected_return': portfolio_return,
+        'volatility': portfolio_volatility,
+        'sharpe_ratio': portfolio_sharpe
+    }
+
+
+# ============================================================================
 # SECTION 2: PORTFOLIO SIMULATOR CLASS
 # This simulates what happens when you actually invest money over time
 # ============================================================================
@@ -181,24 +343,35 @@ class PortfolioSimulator:
     - Performance metrics
     """
     
-    def __init__(self, tickers, initial_investment=10000, risk_free_rate=0.02, 
-                 max_weight=0.4, threshold=1e-2):
+    def __init__(self, tickers, initial_investment=10000, risk_free_rate=0.02,
+                 max_weight=0.4, threshold=1e-2, optimizer='sharpe',
+                 ridge_lambda=1.0, ridge_gamma=8.0, ridge_cap=0.08, ridge_step_size=0.01):
         """
         Initialize the simulator
-        
+
         Parameters explained:
         - tickers: List of stocks to include ['AAPL', 'MSFT', ...]
         - initial_investment: How much money you start with ($10,000 default)
         - risk_free_rate: Risk-free rate for Sharpe calculation (2% default)
-        - max_weight: Maximum % in any one stock (40% default)
+        - max_weight: Maximum % in any one stock (40% default, used by Sharpe optimizer)
         - threshold: Minimum % to hold a position (1% default)
+        - optimizer: 'sharpe' (default, scipy SLSQP) or 'ridge' (projected gradient descent)
+        - ridge_lambda: Ridge L2 penalty strength (default 1.0, only used when optimizer='ridge')
+        - ridge_gamma: Risk-aversion multiplier on variance term (default 8.0)
+        - ridge_cap: Per-asset weight cap for ridge optimizer (default 0.08 = 8%)
+        - ridge_step_size: Gradient descent step size (default 0.01)
         """
         self.tickers = tickers
         self.initial_investment = initial_investment
         self.risk_free_rate = risk_free_rate
         self.max_weight = max_weight
         self.threshold = threshold
-        
+        self.optimizer = optimizer
+        self.ridge_lambda = ridge_lambda
+        self.ridge_gamma = ridge_gamma
+        self.ridge_cap = ridge_cap
+        self.ridge_step_size = ridge_step_size
+
         # These will store simulation results
         self.portfolio_history = []
         self.rebalance_events = []
@@ -246,6 +419,12 @@ class PortfolioSimulator:
         print(f"Simulation Period: {start_date} to {end_date}")
         print(f"Rebalance Frequency: {rebalance_frequency}")
         print(f"Number of Assets: {len(self.tickers)}")
+        print(f"Optimizer: {self.optimizer.upper()}", end="")
+        if self.optimizer == 'ridge':
+            print(f"  (lambda={self.ridge_lambda}, gamma={self.ridge_gamma}, "
+                  f"cap={self.ridge_cap}, step={self.ridge_step_size})")
+        else:
+            print()
         print("="*80 + "\n")
         
         # Convert string dates to datetime if needed
@@ -277,11 +456,20 @@ class PortfolioSimulator:
         opt_cov_matrix = opt_returns.cov() * 252  # Annualized covariance
         
         # Find optimal weights
-        optimal = optimize_portfolio(
-            self.tickers, opt_returns, opt_cov_matrix, 
-            self.risk_free_rate, self.max_weight, self.threshold
-        )
-        
+        if self.optimizer == 'ridge':
+            optimal = optimize_portfolio_ridge(
+                self.tickers, opt_returns, opt_cov_matrix,
+                risk_free_rate=self.risk_free_rate,
+                lam=self.ridge_lambda, gamma=self.ridge_gamma,
+                cap=self.ridge_cap, step_size=self.ridge_step_size,
+                threshold=self.threshold
+            )
+        else:
+            optimal = optimize_portfolio(
+                self.tickers, opt_returns, opt_cov_matrix,
+                self.risk_free_rate, self.max_weight, self.threshold
+            )
+
         print("Initial Optimal Weights:")
         for ticker, weight in sorted(optimal['weights'].items(), key=lambda x: x[1], reverse=True):
             print(f"  {ticker}: {weight:.4f} ({weight*100:.2f}%)")
@@ -350,11 +538,20 @@ class PortfolioSimulator:
                 opt_returns = calculate_log_returns(opt_prices)
                 opt_cov_matrix = opt_returns.cov() * 252
                 
-                optimal = optimize_portfolio(
-                    self.tickers, opt_returns, opt_cov_matrix,
-                    self.risk_free_rate, self.max_weight, self.threshold
-                )
-                
+                if self.optimizer == 'ridge':
+                    optimal = optimize_portfolio_ridge(
+                        self.tickers, opt_returns, opt_cov_matrix,
+                        risk_free_rate=self.risk_free_rate,
+                        lam=self.ridge_lambda, gamma=self.ridge_gamma,
+                        cap=self.ridge_cap, step_size=self.ridge_step_size,
+                        threshold=self.threshold
+                    )
+                else:
+                    optimal = optimize_portfolio(
+                        self.tickers, opt_returns, opt_cov_matrix,
+                        self.risk_free_rate, self.max_weight, self.threshold
+                    )
+
                 print("\nNew Optimal Weights:")
                 for ticker, weight in sorted(optimal['weights'].items(), key=lambda x: x[1], reverse=True):
                     print(f"  {ticker}: {weight:.4f} ({weight*100:.2f}%)")
@@ -769,12 +966,21 @@ class PortfolioSimulator:
         portfolio_sharpe_ratios = np.array(portfolio_sharpe_ratios)
         
         print("Finding optimal portfolio...")
-        
-        # Find the optimal portfolio (max Sharpe ratio)
-        optimal = optimize_portfolio(
-            self.tickers, opt_returns, opt_cov_matrix,
-            self.risk_free_rate, self.max_weight, self.threshold
-        )
+
+        # Find the optimal portfolio using whichever optimizer was configured
+        if self.optimizer == 'ridge':
+            optimal = optimize_portfolio_ridge(
+                self.tickers, opt_returns, opt_cov_matrix,
+                risk_free_rate=self.risk_free_rate,
+                lam=self.ridge_lambda, gamma=self.ridge_gamma,
+                cap=self.ridge_cap, step_size=self.ridge_step_size,
+                threshold=self.threshold
+            )
+        else:
+            optimal = optimize_portfolio(
+                self.tickers, opt_returns, opt_cov_matrix,
+                self.risk_free_rate, self.max_weight, self.threshold
+            )
         
         # Calculate individual asset risk/return
         individual_returns = mean_returns.values
@@ -909,13 +1115,13 @@ class PortfolioSimulator:
         ax.legend(loc='best', fontsize=10, framealpha=0.9)
         ax.grid(True, alpha=0.3, linestyle='--')
         
-        # Set axis limits for better view
-        x_margin = (max(portfolio_volatilities) - min(portfolio_volatilities)) * 0.1
-        y_margin = (max(portfolio_returns) - min(portfolio_returns)) * 0.1
-        ax.set_xlim(min(portfolio_volatilities) * 100 - x_margin * 100, 
-                    max(portfolio_volatilities) * 100 + x_margin * 100)
-        ax.set_ylim(min(portfolio_returns) * 100 - y_margin * 100,
-                    max(portfolio_returns) * 100 + y_margin * 100)
+        # Set axis limits to show ALL plotted elements (random portfolios + frontier curve + assets)
+        all_vols = np.concatenate([portfolio_volatilities, efficient_volatilities, individual_volatilities])
+        all_rets  = np.concatenate([portfolio_returns,     efficient_returns,     individual_returns])
+        x_margin = (all_vols.max() - all_vols.min()) * 0.05
+        y_margin = (all_rets.max()  - all_rets.min())  * 0.05
+        ax.set_xlim((all_vols.min() - x_margin) * 100, (all_vols.max() + x_margin) * 100)
+        ax.set_ylim((all_rets.min()  - y_margin) * 100, (all_rets.max()  + y_margin) * 100)
         
         # Add information box
         info_text = f"Risk-Free Rate: {self.risk_free_rate*100:.1f}%\n"
@@ -954,13 +1160,20 @@ if __name__ == "__main__":
         'HON', 'AMGN', 'IBM', 'UPS', 'MS', 'GS', 'SBUX', 'CAT', 'BA'
     ]
     
-    # Create the simulator
+    # Create the simulator using the Ridge Regression optimizer
+    # (from portfolio optimisation ridge iteration 3)
     simulator = PortfolioSimulator(
         tickers=tickers,
         initial_investment=1000000,     # Start with $1,000,000
-        risk_free_rate=0.02,          # 2% risk-free rate
-        max_weight=0.4,               # Max 40% in any stock
-        threshold=1e-2                # Min 1% to hold
+        risk_free_rate=0.02,            # 2% risk-free rate
+        max_weight=0.4,                 # Max 40% per stock (Sharpe optimizer only)
+        threshold=0.0,                  # No minimum weight threshold for ridge
+        optimizer='ridge',              # Use Ridge Regression PGD optimizer
+        ridge_lambda=1.0,               # Ridge L2 penalty (lam)
+        ridge_gamma=8.0,               # Risk-aversion multiplier (gamma)
+        ridge_cap=0.08,                 # Per-asset weight cap: 8%
+        ridge_step_size=0.01            # Gradient descent step size
+        # To switch back to the original Sharpe optimizer, set optimizer='sharpe'
     )
     
     # Run the simulation
