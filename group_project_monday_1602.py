@@ -990,6 +990,138 @@ def plot_tested_heatmap(mode, gamma_vals, lam_vals, gdf, ldf, gamma_star, lambda
 
 
 
+def plot_efficient_frontier(segs, ret_all, gamma_star, lambda_star, perf):
+    """
+    Markowitz efficient frontier using REALISED returns from ret_all.
+
+    This keeps the random-portfolio cloud, frontier curve, and strategy
+    markers all on the same scale (annualised realised returns).
+
+    - Scatter cloud: random long-only portfolios, coloured by Sharpe ratio.
+    - Grey dots: every stock as a 100%-concentration portfolio.
+    - Navy curve: efficient frontier (PGD sweep on realised mu/cov, lam=0).
+    - Gold star: chosen portfolio re-evaluated on realised mu/cov.
+    - Red diamond: SPY realised CAGR / vol.
+    """
+    tickers = segs[-1]["tickers"]
+    avail = [t for t in tickers if t in ret_all.columns]
+    R = ret_all[avail].dropna(how="any")          # intersection-only rows
+    if len(R) < 20 or R.shape[1] < 2:
+        print("plot_efficient_frontier: not enough clean data", flush=True)
+        return
+
+    p          = R.shape[1]
+    ticker_list = list(R.columns)
+    mu_r  = R.mean(axis=0).values * 252.0          # annualised mean returns
+    cov_r = R.cov().values * 252.0                 # annualised covariance
+    eigmax = float(np.linalg.eigvalsh(cov_r).max())
+
+    rng = np.random.default_rng(42)
+
+    # 1. Random portfolios — apply the same per-asset cap as the optimizer so
+    #    every random portfolio is feasible and lies on or below the frontier.
+    rand_vols, rand_rets = [], []
+    for alpha in [0.1] * 800 + [0.3] * 1000 + [1.0] * 1200 + [3.0] * 700 + [10.0] * 300:
+        w = rng.dirichlet(np.ones(p) * alpha)
+        w = np.minimum(w, cap)      # enforce the same 8% per-asset cap
+        s = w.sum()
+        if s > 1e-8:
+            w /= s
+        rand_vols.append(float(np.sqrt(w @ cov_r @ w)))
+        rand_rets.append(float(mu_r @ w))
+
+    rand_vols   = np.array(rand_vols)
+    rand_rets   = np.array(rand_rets)
+    rand_sharpe = np.where(rand_vols > 1e-8,
+                           (rand_rets - rf_annual) / rand_vols,
+                           np.nan)
+
+    # 2. Individual stocks (each stock as a 100%-weight portfolio) -----------
+    stock_vols = np.sqrt(np.diag(cov_r))
+    stock_rets = mu_r
+
+    # 3. Efficient frontier: sweep gamma, lam=0, realised mu/cov -------------
+    front_vols, front_rets = [], []
+    for g in np.logspace(-3, 3, 100):
+        w_full, _, _ = ridge_portfolio_pgd(
+            cov_r, mu_r, lam=0.0, gamma=float(g), cap=cap, rf=rf_annual,
+            tol=1e-6, max_iter=3000, eigmax=eigmax
+        )
+        w_r = w_full[:p]
+        front_vols.append(float(np.sqrt(w_r @ cov_r @ w_r)))
+        front_rets.append(float(mu_r @ w_r))
+
+    order = np.argsort(front_vols)
+    front_vols = np.array(front_vols)[order]
+    front_rets  = np.array(front_rets)[order]
+
+    # 4. Chosen portfolio (re-evaluated on realised mu/cov) ------------------
+    w_c, _, _ = ridge_portfolio_pgd(
+        cov_r, mu_r, lam=lambda_star, gamma=gamma_star, cap=cap, rf=rf_annual,
+        tol=1e-6, max_iter=5000, eigmax=eigmax
+    )
+    chosen_vol = float(np.sqrt(w_c[:p] @ cov_r @ w_c[:p]))
+    chosen_ret = float(mu_r @ w_c[:p])
+
+    # -------------------------------------------------------------------------
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    # Sharpe-coloured random portfolio scatter
+    mask = np.isfinite(rand_sharpe)
+    sc = ax.scatter(
+        rand_vols[mask] * 100, rand_rets[mask] * 100,
+        c=rand_sharpe[mask], cmap="RdYlGn",
+        s=5, alpha=0.35, zorder=2
+    )
+    cbar = plt.colorbar(sc, ax=ax)
+    cbar.set_label("Sharpe Ratio")
+
+    # Individual stocks
+    ax.scatter(
+        stock_vols * 100, stock_rets * 100,
+        s=22, color="dimgrey", alpha=0.7, zorder=3, label="individual stocks"
+    )
+    # Label top-5 by return
+    for i in np.argsort(stock_rets)[-5:]:
+        ax.annotate(ticker_list[i],
+                    (stock_vols[i] * 100, stock_rets[i] * 100),
+                    fontsize=6, alpha=0.85,
+                    xytext=(3, 3), textcoords="offset points")
+
+    # Efficient frontier
+    ax.plot(front_vols * 100, front_rets * 100,
+            color="navy", linewidth=2.5, zorder=4, label="efficient frontier")
+
+    # Chosen portfolio
+    ax.scatter([chosen_vol * 100], [chosen_ret * 100],
+               s=260, marker="*", color="gold", edgecolors="black",
+               linewidths=0.8, zorder=6,
+               label=f"chosen portfolio (\u03b3={gamma_star:.2g})")
+
+    # SPY realised
+    spy_vol  = perf.get("AnnVol_SPY")
+    spy_cagr = perf.get("CAGR_SPY")
+    if spy_vol is not None and spy_cagr is not None and np.isfinite(spy_vol) and np.isfinite(spy_cagr):
+        ax.scatter([spy_vol * 100], [spy_cagr * 100],
+                   s=140, marker="D", color="crimson", edgecolors="black",
+                   linewidths=0.7, zorder=6, label="SPY (realised CAGR)")
+
+    # Axis limits: show the full frontier curve + main cloud, clip only extreme outliers
+    pad = 3
+    ax.set_xlim(0,
+                max(front_vols.max(), np.nanpercentile(rand_vols, 99)) * 100 + pad)
+    ax.set_ylim(min(front_rets.min(), np.nanpercentile(rand_rets, 1)) * 100 - pad,
+                max(front_rets.max(), np.nanpercentile(rand_rets, 99)) * 100 + pad)
+
+    ax.set_xlabel("Annualised Volatility (%)")
+    ax.set_ylabel("Annualised Return (%)")
+    ax.set_title("Portfolio Efficient Frontier")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+
 # run one mode
 
 
@@ -1106,6 +1238,8 @@ def run_mode(mode, ret_all, clo, vol, adj, parent, bench_prices):
     
     if show_plots:
         plot_tested_heatmap(mode, gamma_values, lam_values, gdf, ldf, gamma_star, lambda_star)
+
+        plot_efficient_frontier(segs, ret_all, gamma_star, lambda_star, perf)
 
         plt.figure(figsize=(10, 4))
         V.plot()
