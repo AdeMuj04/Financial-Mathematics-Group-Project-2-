@@ -4,6 +4,7 @@ from dataclasses import dataclass # To allow definition of modes/configurations
 from datetime import datetime #
 from dateutil.relativedelta import relativedelta
 from pathlib import Path #Should work on any device now
+import hashlib
 import time #check how long it takes
 
 import numpy as np
@@ -312,7 +313,7 @@ def _rf_daily(rf_annual: float) -> float:
 # Function: _hash_list
 # ----------------------------------------------------------------------
 def _hash_list(xs: list[str]) -> str:
-    return str(abs(hash("|".join(xs))))[:10]
+    return hashlib.md5("|".join(xs).encode()).hexdigest()[:10]
 
 
 # Fetch the parent ticker list. We cache the list on disk so re-runs are stable even if Yahoo's screen changes later.
@@ -342,8 +343,19 @@ def get_parent_tickers_yahoo_most_active(n: int) -> list[str]:
 
     url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
     params = {"scrIds": "most_actives", "count": int(n), "start": 0}
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+    for attempt in range(5):
+        r = requests.get(url, params=params, headers=headers, timeout=30)
+        if r.status_code == 429:
+            wait = 10 * (2 ** attempt)
+            print(f"  screener rate-limited, retrying in {wait}s...", flush=True)
+            import time; time.sleep(wait)
+            continue
+        r.raise_for_status()
+        break
     j = r.json()
     quotes = j.get("finance", {}).get("result", [{}])[0].get("quotes", [])
 
@@ -392,6 +404,8 @@ def download_parent_data(
 
     adj_list, clo_list, vol_list = [], [], []
     for i in range(0, len(parent), batch_size):
+        if i > 0:
+            time.sleep(3)  # avoid hitting Yahoo rate limit between batches
         batch = parent[i:i + batch_size]
         # Yahoo download call. We use batches to avoid request-size limits and to keep failures local to a batch.
         df = yf.download(
@@ -400,7 +414,7 @@ def download_parent_data(
             end=end_date,
             auto_adjust=False,
             progress=False,
-            threads=True,
+            threads=False,
         )
         if df is None or len(df) == 0:
             continue
@@ -1928,8 +1942,9 @@ def run_mode(
 # Function: main
 # ----------------------------------------------------------------------
 def main() -> None:
-    start_date = datetime.today() - relativedelta(years=CFG.years_total)
-    end_date = datetime.today()
+    _today = datetime.today()
+    end_date = (_today - relativedelta(days=_today.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_date = end_date - relativedelta(years=CFG.years_total)
 
     global START_DATE, END_DATE
     START_DATE = start_date

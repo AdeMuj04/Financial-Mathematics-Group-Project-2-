@@ -1,6 +1,7 @@
 from dateutil.relativedelta import relativedelta
 from datetime import datetime
 from pathlib import Path
+import hashlib
 import json
 import time
 
@@ -36,7 +37,10 @@ import matplotlib.pyplot as plt
 
 # how far back we backtest
 years = 5
-end_date = datetime.today()
+# snap to the most recent Monday so the cache key is stable for the whole week
+_today = datetime.today()
+end_date = _today - relativedelta(days=_today.weekday())  # 0=Mon, ..., 6=Sun -> go back to Mon
+end_date = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
 start_date = end_date - relativedelta(years=years)
 
 # we use 3 months for:
@@ -65,7 +69,7 @@ apply_costs = True
 target_vol_annual = 0.10
 
 # rebalance modes we compare
-modes = ["monthly", "biweekly10", "quarterly"]
+modes = [   "quarterly"]
 
 # grids (log-spaced)
 n_grid_gamma = 11
@@ -106,10 +110,9 @@ def _dstr(dt):
 
 
 def _hash_list(xs):
-    # cheap, stable-ish cache tag based on a list of strings
-    # (good enough for our caching needs)
+    # deterministic cache tag — uses md5 so the hash is stable across Python sessions
     s = "|".join(xs)
-    return str(abs(hash(s)))[:10]
+    return hashlib.md5(s.encode()).hexdigest()[:10]
 
 
 def annual_vol(r):
@@ -160,12 +163,22 @@ def get_parent_universe(size=250):
 
     # yfinance versions differ in kwargs ("count" vs "size" etc), so we try a few
     for kwargs in [{"count": size}, {"size": size}, {}]:
-        try:
-            out = yf.screen("most_actives", **kwargs)
+        for attempt in range(4):
+            try:
+                out = yf.screen("most_actives", **kwargs)
+                break
+            except Exception as e:
+                msg = str(e).lower()
+                if ("too many requests" in msg or "429" in msg or "rate" in msg) and attempt < 3:
+                    wait = 10 * (attempt + 1)
+                    print(f"  yf.screen rate-limited, retrying in {wait}s...", flush=True)
+                    time.sleep(wait)
+                else:
+                    last_err = e
+                    out = None
+                    break
+        if out is not None:
             break
-        except Exception as e:
-            last_err = e
-            out = None
 
     if out is None:
         raise RuntimeError(f"could not call yf.screen('most_actives'): {last_err}")
@@ -214,21 +227,32 @@ def get_parent_universe(size=250):
 # download price/volume panels (cached)
 
 
-def _download_batch(tickers, start, end):
+def _download_batch(tickers, start, end, retries=5, base_delay=5):
     """
-    Download a batch of tickers from Yahoo.
-    We request OHLC + Adj Close, and we also need Volume.
+    Download a batch of tickers from Yahoo with retry + exponential back-off
+    to handle Yahoo Finance rate-limiting (HTTP 429).
     """
-    return yf.download(
-        tickers,
-        start=start,
-        end=end,
-        progress=False,
-        auto_adjust=False,
-        actions=False,
-        group_by="column",
-        threads=True
-    )
+    for attempt in range(retries):
+        try:
+            return yf.download(
+                tickers,
+                start=start,
+                end=end,
+                progress=False,
+                auto_adjust=False,
+                actions=False,
+                group_by="column",
+                threads=False
+            )
+        except Exception as e:
+            msg = str(e).lower()
+            if ("too many requests" in msg or "429" in msg or "rate" in msg) and attempt < retries - 1:
+                wait = base_delay * (2 ** attempt)
+                print(f"  rate-limited, retrying in {wait}s (attempt {attempt+1}/{retries})...", flush=True)
+                time.sleep(wait)
+            else:
+                raise
+    raise RuntimeError(f"download failed after {retries} retries")
 
 
 def download_parent_data(parent_tickers, start, end, batch_size=80):
@@ -258,6 +282,8 @@ def download_parent_data(parent_tickers, start, end, batch_size=80):
     adj_list, clo_list, vol_list = [], [], []
 
     for i in range(0, len(parent_tickers), batch_size):
+        if i > 0:
+            time.sleep(3)  # avoid hitting Yahoo rate limit between batches
         batch = parent_tickers[i:i + batch_size]
         raw = _download_batch(batch, start, end)
 
