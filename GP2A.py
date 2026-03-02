@@ -408,15 +408,27 @@ def download_parent_data(
         if i > 0:
             time.sleep(3)  # avoid hitting Yahoo rate limit between batches
         batch = parent[i:i + batch_size]
-        # Yahoo download call. We use batches to avoid request-size limits and to keep failures local to a batch.
-        df = yf.download(
-            batch,
-            start=start_date,
-            end=end_date,
-            auto_adjust=False,
-            progress=False,
-            threads=False,
-        )
+        # Yahoo download call with retry so a 429 doesn't abort the whole run.
+        df = None
+        for attempt in range(5):
+            try:
+                df = yf.download(
+                    batch,
+                    start=start_date,
+                    end=end_date,
+                    auto_adjust=False,
+                    progress=False,
+                    threads=False,
+                )
+                break
+            except Exception as exc:
+                msg = str(exc).lower()
+                if ("too many requests" in msg or "429" in msg or "rate" in msg) and attempt < 4:
+                    wait = 5 * (2 ** attempt)
+                    print(f"  batch {i // batch_size + 1} rate-limited, retrying in {wait}s...", flush=True)
+                    time.sleep(wait)
+                else:
+                    raise
         if df is None or len(df) == 0:
             continue
 
@@ -449,7 +461,20 @@ def download_parent_data(
 # Function: download_benchmark_prices, returns a panda series named ticker for each one
 # ----------------------------------------------------------------------
 def download_benchmark_prices(ticker: str, start_date: datetime, end_date: datetime) -> pd.Series:
-    df = yf.download(ticker, start=start_date, end=end_date, auto_adjust=False, progress=False, threads=True)
+    df = None
+    for attempt in range(5):
+        try:
+            df = yf.download(ticker, start=start_date, end=end_date,
+                             auto_adjust=False, progress=False, threads=False)
+            break
+        except Exception as exc:
+            msg = str(exc).lower()
+            if ("too many requests" in msg or "429" in msg or "rate" in msg) and attempt < 4:
+                wait = 5 * (2 ** attempt)
+                print(f"  benchmark rate-limited, retrying in {wait}s...", flush=True)
+                time.sleep(wait)
+            else:
+                raise
     if df is None or len(df) == 0:
         raise RuntimeError("Benchmark download failed.")
 
