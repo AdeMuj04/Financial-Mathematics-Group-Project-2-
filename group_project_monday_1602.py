@@ -67,6 +67,8 @@ apply_costs = True
 
 # target vol used for choosing gamma (we pick gamma with realised vol closest to this)
 target_vol_annual = 0.10
+# optional: if set, pick gamma by realised CAGR closest to this instead of vol
+target_return_annual = None
 
 # rebalance modes we compare
 modes = [   "quarterly"]
@@ -359,6 +361,8 @@ def rebalance_idx_for_mode(dates, mode, start_trade_date):
         return []
     first = int(ok[0])
 
+    if mode == "weekly":
+        return list(range(first, len(dates), 5))
     if mode == "biweekly10":
         return list(range(first, len(dates), 10))
 
@@ -372,7 +376,7 @@ def rebalance_idx_for_mode(dates, mode, start_trade_date):
         last = s.groupby([dates.year, q]).max()
         reb_dates = pd.DatetimeIndex(last.values)
     else:
-        raise ValueError("mode must be monthly / biweekly10 / quarterly")
+        raise ValueError("mode must be weekly / monthly / biweekly10 / quarterly")
 
     idx = []
     for d in reb_dates:
@@ -1173,7 +1177,12 @@ def run_mode(mode, ret_all, clo, vol, adj, parent, bench_prices):
             print(f"  gamma {i+1}/{len(gamma_values)} {g:.2e} vol={vol_g:.2%} V={finalV:,.0f}", flush=True)
 
     gdf = pd.DataFrame(rows_g)
-    gdf["err"] = (gdf["vol"] - target_vol_annual).abs()
+    if target_return_annual is not None:
+        v0 = 10_000_000.0
+        gdf["cagr_approx"] = (gdf["finalV"] / v0) ** (1.0 / years) - 1.0
+        gdf["err"] = (gdf["cagr_approx"] - target_return_annual).abs()
+    else:
+        gdf["err"] = (gdf["vol"] - target_vol_annual).abs()
     gamma_star = float(gdf.loc[gdf["err"].idxmin(), "gamma"])
     vol_star = float(gdf.loc[gdf["err"].idxmin(), "vol"])
 

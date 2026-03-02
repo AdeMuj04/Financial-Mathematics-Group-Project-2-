@@ -5,6 +5,7 @@ from datetime import datetime #
 from dateutil.relativedelta import relativedelta
 from pathlib import Path #Should work on any device now
 import hashlib
+import json
 import time #check how long it takes
 
 import numpy as np
@@ -572,7 +573,17 @@ def make_rebalance_dates(mode: str, dates: pd.DatetimeIndex) -> list[pd.Timestam
         idxs = grp.max().to_numpy()
         return list(dates[idxs])
 
-    raise ValueError("Unknown mode")
+    if mode == "semi-annual":
+        grp = pd.Series(np.arange(len(dates)), index=dates).groupby([dates.year, (dates.month - 1) // 6])
+        idxs = grp.max().to_numpy()
+        return list(dates[idxs])
+
+    if mode == "annual":
+        grp = pd.Series(np.arange(len(dates)), index=dates).groupby([dates.year])
+        idxs = grp.max().to_numpy()
+        return list(dates[idxs])
+
+    raise ValueError(f"Unknown mode: {mode!r}")
 
 
 # Build rebalance-to-rebalance 'segments' for a given mode (monthly/quarterly).
@@ -846,7 +857,8 @@ def simulate_strategy_from_segments(
     max_iter: int,
     initial_wealth: float,
     store_weights: bool,
-) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame, pd.DataFrame | None]:
+    store_detail: bool = False,
+) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame, pd.DataFrame | None, list[dict] | None]:
     rf_daily = _rf_daily(CFG.rf_annual)
 
     Vt = float(initial_wealth)
@@ -858,6 +870,7 @@ def simulate_strategy_from_segments(
     to_rows = []
     c_rows = []
     weights_rows = [] if store_weights else None
+    detail_rows: list[dict] | None = [] if store_detail else None
 
     for seg in segs:
         t0 = pd.Timestamp(seg["t0"])
@@ -894,8 +907,20 @@ def simulate_strategy_from_segments(
 
         # Simple proportional cost model: cost = kappa * turnover * current wealth.
         # We subtract costs immediately at the rebalance before the next holding period starts.
+        V_pre = float(Vt)
         cost = (CFG.kappa * turnover * Vt) if CFG.apply_costs else 0.0
         Vt = max(0.0, Vt - cost)
+
+        if store_detail and detail_rows is not None:
+            detail_rows.append({
+                "date": str(t0.date()),
+                "pre_value": round(V_pre, 2),
+                "post_value": round(float(Vt), 2),
+                "cost": round(float(cost), 2),
+                "turnover": round(float(turnover), 6),
+                "old_weights": {t: round(float(v), 6) for t, v in w_prev.items()} if w_prev is not None else {},
+                "new_weights": {t: round(float(v), 6) for t, v in w_curr.items() if float(v) > 1e-8},
+            })
 
         to_rows.append(pd.Series({"turnover": turnover}, name=t0))
         c_rows.append(pd.Series({"cost": cost}, name=t0))
@@ -923,7 +948,7 @@ def simulate_strategy_from_segments(
     TO = pd.DataFrame(to_rows)
     C = pd.DataFrame(c_rows)
     W = pd.DataFrame(weights_rows) if store_weights else None
-    return V, TO, C, W
+    return V, TO, C, W, detail_rows
 
 
 # Baseline backtest: equal-weight subject to the same long-only + cap (+ optional cash cap) constraints.
@@ -1111,7 +1136,7 @@ def run_grid_search(
 
     for i, g in enumerate(gamma_vals):
         for lam in lam_vals:
-            V, _, _, _ = simulate_strategy_from_segments(
+            V, _, _, _, _ = simulate_strategy_from_segments(
                 segs=segs,
                 gamma=float(g),
                 lam=float(lam),
@@ -1909,7 +1934,7 @@ def run_mode(
         ],
     )
 
-    V_ret, TO_ret, C_ret, W_ret = simulate_strategy_from_segments(
+    V_ret, TO_ret, C_ret, W_ret, detail_ret = simulate_strategy_from_segments(
         segs=test_segs,
         gamma=ret_params[0],
         lam=ret_params[1],
@@ -1917,8 +1942,9 @@ def run_mode(
         max_iter=int(PROFILE.max_iter_test),
         initial_wealth=CFG.initial_wealth,
         store_weights=SAVE_WEIGHTS_CSV,
+        store_detail=True,
     )
-    V_risk, TO_risk, C_risk, W_risk = simulate_strategy_from_segments(
+    V_risk, TO_risk, C_risk, W_risk, detail_risk = simulate_strategy_from_segments(
         segs=test_segs,
         gamma=risk_params[0],
         lam=risk_params[1],
@@ -1926,6 +1952,7 @@ def run_mode(
         max_iter=int(PROFILE.max_iter_test),
         initial_wealth=CFG.initial_wealth,
         store_weights=SAVE_WEIGHTS_CSV,
+        store_detail=True,
     )
     V_eq, TO_eq, C_eq, W_eq = simulate_equal_weight_from_segments(
         segs=test_segs,
@@ -1986,6 +2013,14 @@ def run_mode(
                 save_csv(W_risk, mode_dir / "weights_strategy_risk.csv")
             if W_eq is not None:
                 save_csv(W_eq, mode_dir / "weights_equal_weight.csv")
+
+    # Save per-rebalance detail for GUI rebalancing tab
+    for _label, _det in [("strategy_return", detail_ret), ("strategy_risk", detail_risk)]:
+        if _det:
+            _det_path = mode_dir / f"rebalancing_{_label}.json"
+            with open(_det_path, "w", encoding="utf-8") as _fh:
+                json.dump(_det, _fh, indent=2)
+            print(f"GUI_DETAIL={_det_path}", flush=True)
 
     if SAVE_PLOTS or SHOW_PLOTS:
         plot_wealth_comparison(
@@ -2099,10 +2134,8 @@ def main() -> None:
     # Decide which rebalance frequencies to run.
     # (This is a top-level control only; it does not change the strategy mechanics.)
     _m = RUN_MODES.strip().lower()
-    if _m == "monthly":
-        modes_to_run = ["monthly"]
-    elif _m == "quarterly":
-        modes_to_run = ["quarterly"]
+    if _m in ("monthly", "quarterly", "semi-annual", "annual"):
+        modes_to_run = [_m]
     else:
         modes_to_run = ["monthly", "quarterly"]
 
@@ -2179,6 +2212,7 @@ def main() -> None:
             "Per-mode subfolders contain CSV tables and PNG figures.",
         ],
     )
+    print(f"GUI_RESULTS_DIR={OUT_DIR}", flush=True)
 
 
 if __name__ == "__main__":
