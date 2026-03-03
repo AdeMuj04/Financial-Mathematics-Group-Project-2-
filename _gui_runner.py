@@ -29,6 +29,13 @@ gp.CFG = Config(
     n_select=min(int(config["n_select"]), int(config["parent_size"])),
     cap=float(config["cap"]) / 100.0,
     target_vol_annual=float(config["target_vol"]) / 100.0,
+    years_total=int(config.get("years_total", 8)),
+    test_years=int(config.get("test_years", 3)),
+    lookback_days=int(config.get("lookback", 63)),
+    rf_annual=float(config.get("rf", 3.7)) / 100.0,
+    kappa=float(config.get("kappa_bps", 10)) / 10000.0,
+    apply_costs=bool(config.get("apply_costs", True)),
+    initial_wealth=float(config.get("wealth_M", 10)) * 1_000_000.0,
 )
 
 # ── rebalance mode ─────────────────────────────────────────────────────────────

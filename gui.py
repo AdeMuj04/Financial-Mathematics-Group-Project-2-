@@ -215,7 +215,7 @@ class BacktestGUI:
                        self.parent_size_var, 50, 250,
                        "{:.0f} stocks").pack(fill="x", **p)
         LabelledSlider(inner, "Top N by Liquidity (investable)",
-                       self.n_select_var, 10, 100,
+                       self.n_select_var, 10, 50,
                        "{:.0f} stocks").pack(fill="x", **p)
 
         self._divider(inner)
@@ -228,7 +228,7 @@ class BacktestGUI:
         self.use_ret_var    = tk.BooleanVar(value=False)
 
         LabelledSlider(inner, "Per-asset Cap",
-                       self.cap_var, 2, 25,
+                       self.cap_var, 2, 100,
                        "{:.1f} %").pack(fill="x", **p)
         LabelledSlider(inner, "Target Volatility",
                        self.target_vol_var, 5, 40,
@@ -241,6 +241,46 @@ class BacktestGUI:
             inner,
             text="Use target return to select \u03b3\n(instead of target vol)",
             variable=self.use_ret_var,
+        ).pack(anchor="w", padx=16, pady=(2, 8))
+
+        self._divider(inner)
+
+        # ── horizon & split ───────────────────────────────────────────────────
+        self._heading(inner, "Horizon & Split")
+        self.years_total_var = tk.DoubleVar(value=8)
+        self.test_years_var  = tk.DoubleVar(value=3)
+        self.lookback_var    = tk.DoubleVar(value=63)
+        LabelledSlider(inner, "Total Years of Data",
+                       self.years_total_var, 3, 12,
+                       "{:.0f} yrs").pack(fill="x", **p)
+        LabelledSlider(inner, "Test Window",
+                       self.test_years_var, 1, 5,
+                       "{:.0f} yrs").pack(fill="x", **p)
+        LabelledSlider(inner, "Lookback Window",
+                       self.lookback_var, 21, 126,
+                       "{:.0f} days").pack(fill="x", **p)
+
+        self._divider(inner)
+
+        # ── costs & rates ─────────────────────────────────────────────────────
+        self._heading(inner, "Costs & Rates")
+        self.rf_var          = tk.DoubleVar(value=3.7)
+        self.kappa_var       = tk.DoubleVar(value=10)    # bps
+        self.apply_costs_var = tk.BooleanVar(value=True)
+        self.wealth_var      = tk.DoubleVar(value=10)    # millions
+        LabelledSlider(inner, "Risk-Free Rate",
+                       self.rf_var, 0, 10,
+                       "{:.1f} %/yr").pack(fill="x", **p)
+        LabelledSlider(inner, "Transaction Cost",
+                       self.kappa_var, 0, 50,
+                       "{:.0f} bps").pack(fill="x", **p)
+        LabelledSlider(inner, "Initial Wealth",
+                       self.wealth_var, 1, 50,
+                       "${:.0f}M").pack(fill="x", **p)
+        ttk.Checkbutton(
+            inner,
+            text="Apply transaction costs",
+            variable=self.apply_costs_var,
         ).pack(anchor="w", padx=16, pady=(2, 8))
 
         self._divider(inner)
@@ -447,6 +487,13 @@ class BacktestGUI:
             "target_vol":  round(float(self.target_vol_var.get()), 2),
             "target_ret":  round(float(self.target_ret_var.get()), 2),
             "use_ret":     bool(self.use_ret_var.get()),
+            "years_total": int(self.years_total_var.get()),
+            "test_years":  int(self.test_years_var.get()),
+            "lookback":    int(self.lookback_var.get()),
+            "rf":          round(float(self.rf_var.get()), 2),
+            "kappa_bps":   round(float(self.kappa_var.get()), 1),
+            "apply_costs": bool(self.apply_costs_var.get()),
+            "wealth_M":    round(float(self.wealth_var.get()), 1),
         }
 
         self._append("\u2500" * 60 + "\n", "info")
