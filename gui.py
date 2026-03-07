@@ -563,6 +563,11 @@ class BacktestGUI:
     # ── results loading ───────────────────────────────────────────────────────
     def _load_results(self, results_dir: str):
         rd = Path(results_dir)
+        
+        # Make relative results paths resolve relative to the GUI script folder,
+        # not Spyder's current working directory.
+        if not rd.is_absolute():
+            rd = (Path(SCRIPT_DIR) / rd).resolve()
 
         # Load all rebalancing JSON files
         for jf in sorted(rd.rglob("rebalancing_*.json")):
