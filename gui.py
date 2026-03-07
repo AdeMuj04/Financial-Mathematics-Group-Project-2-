@@ -225,8 +225,6 @@ class BacktestGUI:
         self.cap_var        = tk.DoubleVar(value=10.0)
         self.target_vol_var = tk.DoubleVar(value=15.0)
         self.target_ret_var = tk.DoubleVar(value=20.0)
-        self.use_ret_var    = tk.BooleanVar(value=False)
-
         LabelledSlider(inner, "Per-asset Cap",
                        self.cap_var, 2, 100,
                        "{:.1f} %").pack(fill="x", **p)
@@ -236,12 +234,6 @@ class BacktestGUI:
         LabelledSlider(inner, "Target Return",
                        self.target_ret_var, 5, 50,
                        "{:.1f} %/yr").pack(fill="x", **p)
-
-        ttk.Checkbutton(
-            inner,
-            text="Use target return to select \u03b3\n(instead of target vol)",
-            variable=self.use_ret_var,
-        ).pack(anchor="w", padx=16, pady=(2, 8))
 
         self._divider(inner)
 
@@ -486,7 +478,6 @@ class BacktestGUI:
             "cap":         round(float(self.cap_var.get()), 2),
             "target_vol":  round(float(self.target_vol_var.get()), 2),
             "target_ret":  round(float(self.target_ret_var.get()), 2),
-            "use_ret":     bool(self.use_ret_var.get()),
             "years_total": int(self.years_total_var.get()),
             "test_years":  int(self.test_years_var.get()),
             "lookback":    int(self.lookback_var.get()),
