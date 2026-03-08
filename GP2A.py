@@ -2095,23 +2095,7 @@ def run_mode(
             window_days=int(CFG.lookback_days),
         )
 
-        # 2) Top-10 weights over time (requires store_weights=True / SAVE_WEIGHTS_CSV=True).
-        plot_top_weights_over_time(
-            mode,
-            W_ret,
-            mode_dir / "top10_weights_strategy_return_test.png",
-            top_k=10,
-            title_suffix="strategy_return",
-        )
-        plot_top_weights_over_time(
-            mode,
-            W_risk,
-            mode_dir / "top10_weights_strategy_risk_test.png",
-            top_k=10,
-            title_suffix="strategy_risk",
-        )
-
-        # 3) Calibration diagnostics (plotted at the end, but based on the coarse grid run).
+        # 2) Calibration diagnostics (plotted at the end, but based on the coarse grid run).
         plot_calibration_best_lambda_by_gamma(
             mode,
             grid_c,

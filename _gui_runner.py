@@ -41,6 +41,10 @@ gp.CFG = Config(
 # ── rebalance mode ─────────────────────────────────────────────────────────────
 gp.RUN_MODES = config["mode"]
 
+# ── run profile ────────────────────────────────────────────────────────────────
+gp.RUN_PROFILE = config.get("run_profile", "BALANCED").upper()
+gp.PROFILE = gp.PROFILES.get(gp.RUN_PROFILE, gp.PROFILES["BALANCED"])
+
 # ── display / output settings ─────────────────────────────────────────────────
 gp.SHOW_PLOTS = False   # no interactive window in subprocess
 gp.SAVE_PLOTS = True    # save PNGs to OUT_DIR

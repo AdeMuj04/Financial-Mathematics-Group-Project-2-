@@ -192,6 +192,20 @@ class BacktestGUI:
 
         p = dict(padx=16, pady=5)
 
+        # ── run profile ───────────────────────────────────────────────────────
+        self._heading(inner, "Run Profile")
+        self.run_profile_var = tk.StringVar(value="BALANCED")
+        for label, val in [
+            ("Fast",     "FAST"),
+            ("Balanced", "BALANCED"),
+            ("Accurate", "ACCURATE"),
+        ]:
+            ttk.Radiobutton(inner, text=label,
+                            variable=self.run_profile_var, value=val).pack(
+                anchor="w", **p)
+
+        self._divider(inner)
+
         # ── rebalancing period ────────────────────────────────────────────────
         self._heading(inner, "Rebalancing Period")
         self.mode_var = tk.StringVar(value="quarterly")
@@ -231,10 +245,6 @@ class BacktestGUI:
         LabelledSlider(inner, "Target Volatility",
                        self.target_vol_var, 5, 40,
                        "{:.1f} %/yr").pack(fill="x", **p)
-        LabelledSlider(inner, "Target Return",
-                       self.target_ret_var, 5, 50,
-                       "{:.1f} %/yr").pack(fill="x", **p)
-
         self._divider(inner)
 
         # ── horizon & split ───────────────────────────────────────────────────
@@ -483,8 +493,9 @@ class BacktestGUI:
             "lookback":    int(self.lookback_var.get()),
             "rf":          round(float(self.rf_var.get()), 2),
             "kappa_bps":   round(float(self.kappa_var.get()), 1),
-            "apply_costs": bool(self.apply_costs_var.get()),
-            "wealth_M":    round(float(self.wealth_var.get()), 1),
+            "apply_costs":  bool(self.apply_costs_var.get()),
+            "wealth_M":     round(float(self.wealth_var.get()), 1),
+            "run_profile":  self.run_profile_var.get(),
         }
 
         self._append("\u2500" * 60 + "\n", "info")
